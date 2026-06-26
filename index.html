@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>發票辨識結算帳冊</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
+<style>
+  :root{
+    --ink:#2E2A26; --ink2:#3D3935; --brass:#B8973E; --brass-d:#9A7C2E;
+    --rose:#CEB4A9; --paper:#FAF6EF; --paper2:#F2EBDD; --card:#FFFDF9;
+    --line:rgba(61,57,53,.16); --line2:rgba(61,57,53,.08);
+    --ok:#5C7A4A; --err:#A84B3A; --muted:#8B8378;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    font-family:'Noto Sans TC',system-ui,sans-serif;
+    color:var(--ink2); background:var(--paper);
+    background-image:linear-gradient(180deg,#F6F0E6,var(--paper));
+    -webkit-font-smoothing:antialiased; line-height:1.5;
+  }
+  .num{font-variant-numeric:tabular-nums; font-feature-settings:"tnum"}
+  /* ---- 頂部帳冊頭 ---- */
+  header.masthead{
+    background:var(--ink); color:var(--paper);
+    border-bottom:3px solid var(--brass);
+    padding:22px clamp(16px,4vw,48px) 18px;
+  }
+  .mast-row{display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap; max-width:1180px; margin:0 auto}
+  .mast-title{font-family:'Noto Serif TC',serif; font-weight:700; font-size:clamp(20px,2.4vw,30px); letter-spacing:.06em; line-height:1.1}
+  .mast-title small{display:block; font-family:'Noto Sans TC'; font-weight:400; font-size:12px; letter-spacing:.28em; color:var(--rose); margin-top:7px}
+  .mast-meta{text-align:right; font-size:12.5px; color:var(--rose); letter-spacing:.04em}
+  .mast-meta input{
+    background:transparent; border:none; border-bottom:1px solid rgba(206,180,169,.4);
+    color:var(--paper); font-family:inherit; font-size:13px; text-align:right; padding:2px 0; width:170px; outline:none;
+  }
+  .mast-meta input:focus{border-bottom-color:var(--brass)}
+  /* ---- 主容器 ---- */
+  main{max-width:1180px; margin:0 auto; padding:clamp(16px,3vw,34px) clamp(16px,4vw,48px) 80px}
+  /* ---- 投放區 ---- */
+  .dropzone{
+    border:1.5px dashed var(--brass); border-radius:3px; background:var(--card);
+    padding:34px 24px; text-align:center; cursor:pointer; transition:.18s;
+    position:relative;
+  }
+  .dropzone:hover,.dropzone.over{background:var(--paper2); border-color:var(--brass-d)}
+  .dz-icon{width:38px; height:38px; margin:0 auto 12px; opacity:.85}
+  .dz-title{font-family:'Noto Serif TC',serif; font-size:18px; color:var(--ink2); font-weight:600}
+  .dz-sub{font-size:13px; color:var(--muted); margin-top:6px}
+  .dz-actions{margin-top:16px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap}
+  /* ---- 按鈕 ---- */
+  .btn{
+    font-family:inherit; font-size:13.5px; font-weight:500; letter-spacing:.02em;
+    padding:9px 16px; border-radius:2px; border:1px solid var(--line);
+    background:var(--card); color:var(--ink2); cursor:pointer; transition:.15s;
+  }
+  .btn:hover{border-color:var(--brass); color:var(--brass-d)}
+  .btn-solid{background:var(--ink2); color:var(--paper); border-color:var(--ink2)}
+  .btn-solid:hover{background:var(--ink); color:#fff}
+  .btn-brass{background:var(--brass); color:#fff; border-color:var(--brass)}
+  .btn-brass:hover{background:var(--brass-d); color:#fff}
+  .btn-ghost{background:transparent; border-color:transparent; color:var(--muted); padding:6px 10px}
+  .btn-ghost:hover{color:var(--err); border-color:transparent}
+  .btn:disabled{opacity:.45; cursor:not-allowed}
+  .btn-sm{font-size:12.5px; padding:6px 11px}
+  /* ---- 卡片 ---- */
+  .invoice{
+    background:var(--card); border:1px solid var(--line); border-top:3px solid var(--brass);
+    border-radius:3px; margin-top:22px; box-shadow:0 1px 0 rgba(61,57,53,.04), 0 8px 24px -18px rgba(61,57,53,.4);
+    overflow:hidden;
+  }
+  .inv-head{display:flex; gap:14px; padding:16px 18px; border-bottom:1px solid var(--line2); align-items:flex-start; flex-wrap:wrap}
+  .inv-thumb{
+    width:74px; height:74px; flex:none; border:1px solid var(--line); border-radius:2px;
+    object-fit:cover; background:var(--paper2); cursor:zoom-in;
+  }
+  .inv-fields{flex:1 1 280px; display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px 14px}
+  .fld{display:flex; flex-direction:column; gap:3px}
+  .fld label{font-size:11px; letter-spacing:.16em; color:var(--muted); text-transform:uppercase}
+  .fld input{
+    font-family:inherit; font-size:14.5px; color:var(--ink2); background:transparent;
+    border:none; border-bottom:1px solid var(--line); padding:4px 2px; outline:none; transition:.15s;
+  }
+  .fld input:focus{border-bottom-color:var(--brass)}
+  .inv-idx{
+    font-family:'Noto Serif TC',serif; font-weight:700; font-size:13px; color:var(--brass-d);
+    border:1px solid var(--brass); border-radius:50%; width:30px; height:30px;
+    display:grid; place-items:center; flex:none;
+  }
+  /* ---- 明細表 ---- */
+  .tbl-wrap{overflow-x:auto}
+  table.items{width:100%; border-collapse:collapse; min-width:520px}
+  table.items th{
+    font-size:11px; letter-spacing:.14em; color:var(--muted); text-transform:uppercase;
+    text-align:left; font-weight:500; padding:9px 12px; border-bottom:1px solid var(--line);
+    background:var(--paper2);
+  }
+  table.items th.r,table.items td.r{text-align:right}
+  table.items td{padding:3px 8px; border-bottom:1px solid var(--line2)}
+  table.items input{
+    font-family:inherit; font-size:14px; color:var(--ink2); background:transparent;
+    border:1px solid transparent; border-radius:2px; padding:6px 6px; width:100%; outline:none;
+  }
+  table.items input:hover{border-color:var(--line2)}
+  table.items input:focus{border-color:var(--brass); background:#fff}
+  table.items input.r{text-align:right}
+  .col-del{width:34px}
+  .row-del{color:var(--muted); border:none; background:transparent; cursor:pointer; font-size:16px; line-height:1; padding:4px 6px; border-radius:3px}
+  .row-del:hover{color:var(--err); background:rgba(168,75,58,.08)}
+  .inv-foot{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 18px; border-top:1px solid var(--line); flex-wrap:wrap}
+  .foot-left{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+  .total-box{display:flex; align-items:center; gap:10px}
+  .total-box label{font-size:11px; letter-spacing:.16em; color:var(--muted)}
+  .total-box .auto{font-size:12px; color:var(--muted)}
+  .total-input{
+    font-family:'Noto Serif TC',serif; font-weight:700; font-size:20px; color:var(--ink2);
+    text-align:right; border:none; border-bottom:2px solid var(--brass); width:130px; padding:2px 4px; outline:none; background:transparent;
+  }
+  .pill-sum{font-size:11px; border:1px solid var(--line); border-radius:2px; padding:5px 8px; color:var(--muted); cursor:pointer}
+  .pill-sum:hover{border-color:var(--brass); color:var(--brass-d)}
+  /* ---- 狀態卡 ---- */
+  .pending{
+    background:var(--card); border:1px dashed var(--brass); border-radius:3px; margin-top:22px;
+    padding:18px; display:flex; gap:14px; align-items:center; color:var(--muted); font-size:14px;
+  }
+  .spinner{width:20px; height:20px; border:2.5px solid var(--line); border-top-color:var(--brass); border-radius:50%; animation:spin .8s linear infinite; flex:none}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .pending.error{border-color:var(--err); color:var(--err)}
+  .pending .raw{font-size:11px; color:var(--muted); max-height:60px; overflow:auto; font-family:monospace; margin-top:4px}
+  /* ---- 結算 ---- */
+  .settle{margin-top:40px}
+  .sec-title{
+    font-family:'Noto Serif TC',serif; font-weight:700; font-size:19px; color:var(--ink2);
+    letter-spacing:.05em; padding-bottom:8px; border-bottom:2px solid var(--ink2); margin-bottom:14px;
+    display:flex; align-items:center; gap:10px;
+  }
+  .sec-title .mark{width:7px; height:18px; background:var(--brass); display:inline-block}
+  .panels{display:grid; grid-template-columns:1.5fr 1fr; gap:22px; align-items:start}
+  @media(max-width:780px){.panels{grid-template-columns:1fr}}
+  table.summary{width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line)}
+  table.summary th{font-size:11px; letter-spacing:.12em; color:var(--muted); text-transform:uppercase; font-weight:500; text-align:left; padding:10px 12px; border-bottom:1.5px solid var(--ink2); background:var(--paper2)}
+  table.summary th.r,table.summary td.r{text-align:right}
+  table.summary td{padding:9px 12px; border-bottom:1px solid var(--line2); font-size:14px}
+  table.summary tr:last-child td{border-bottom:none}
+  table.summary tfoot td{border-top:1.5px solid var(--ink2); font-family:'Noto Serif TC',serif; font-weight:700; font-size:15px; color:var(--ink2); background:var(--paper2)}
+  .vendor-tag{display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:7px; vertical-align:middle}
+  .empty-note{color:var(--muted); font-size:14px; padding:24px; text-align:center; border:1px dashed var(--line); border-radius:3px; background:var(--card)}
+  .toolbar{display:flex; gap:10px; flex-wrap:wrap; margin-top:24px; padding-top:20px; border-top:1px solid var(--line)}
+  .grand{font-family:'Noto Serif TC',serif; font-weight:700; font-size:26px; color:var(--ink2)}
+  .grand small{font-size:12px; font-family:'Noto Sans TC'; color:var(--muted); letter-spacing:.1em; font-weight:400; display:block; margin-bottom:2px}
+  /* ---- toast ---- */
+  #toast{position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(20px); opacity:0; background:var(--ink); color:var(--paper); padding:11px 20px; border-radius:3px; font-size:13.5px; border-left:3px solid var(--brass); transition:.25s; pointer-events:none; z-index:50}
+  #toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
+  /* lightbox */
+  #lightbox{position:fixed; inset:0; background:rgba(46,42,38,.85); display:none; place-items:center; z-index:60; cursor:zoom-out; padding:30px}
+  #lightbox img{max-width:90vw; max-height:90vh; border:3px solid var(--paper); box-shadow:0 20px 60px rgba(0,0,0,.5)}
+  .hint{font-size:12px; color:var(--muted); margin-top:6px}
+  #gate{position:fixed; inset:0; background:var(--ink); display:grid; place-items:center; z-index:80; padding:24px}
+  .gate-card{background:var(--card); border-top:3px solid var(--brass); border-radius:4px; padding:34px 30px; width:min(360px,90vw); text-align:center; box-shadow:0 20px 60px rgba(0,0,0,.4)}
+  .gate-title{font-family:'Noto Serif TC',serif; font-weight:700; font-size:20px; color:var(--ink2); letter-spacing:.05em}
+  .gate-sub{font-size:13px; color:var(--muted); margin:8px 0 18px; letter-spacing:.04em}
+  #gatePw{width:100%; font-family:inherit; font-size:15px; padding:11px 12px; border:1px solid var(--line); border-radius:2px; outline:none; text-align:center; letter-spacing:.1em; margin-bottom:12px; background:var(--paper)}
+  #gatePw:focus{border-color:var(--brass)}
+  #gate .btn{width:100%; padding:11px}
+  #gateErr{font-size:13px; color:var(--err); margin-top:10px; min-height:18px}
+  .keyrow{display:flex; gap:8px; align-items:center; justify-content:center; flex-wrap:wrap; margin-top:14px; padding-top:14px; border-top:1px solid var(--line2)}
+  .keyrow span.lbl{font-size:11px; letter-spacing:.16em; color:var(--muted); text-transform:uppercase}
+  .keyrow input{font-family:inherit; font-size:13px; padding:7px 10px; border:1px solid var(--line); border-radius:2px; width:min(360px,70vw); outline:none; background:var(--paper)}
+  .keyrow input:focus{border-color:var(--brass)}
+  .keyrow select{font-family:inherit; font-size:13px; padding:7px 8px; border:1px solid var(--line); border-radius:2px; outline:none; background:var(--paper); color:var(--ink2); cursor:pointer}
+  .keyrow select:focus{border-color:var(--brass)}
+  #keyStatus{font-size:12px}
+  #keyStatus.ok{color:var(--ok)} #keyStatus.no{color:var(--muted)}
+</style>
+</head>
+<body>
+<div id="gate">
+  <div class="gate-card">
+    <div class="gate-title">發票辨識結算帳冊</div>
+    <div class="gate-sub">請輸入使用密碼</div>
+    <input type="password" id="gatePw" placeholder="密碼" autocomplete="current-password">
+    <button class="btn btn-brass" id="gateBtn">進入</button>
+    <div id="gateErr"></div>
+  </div>
+</div>
+<header class="masthead">
+  <div class="mast-row">
+    <div class="mast-title">發票辨識結算帳冊<small>INVOICE LEDGER · 花坊採購</small></div>
+    <div class="mast-meta">
+      <div>登記日期　<span id="sessionDate" class="num"></span></div>
+      <div style="margin-top:6px">作業名稱　<input id="sessionLabel" placeholder="例如 六月花材結算" /></div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="dropzone" id="dropzone">
+    <svg class="dz-icon" viewBox="0 0 24 24" fill="none" stroke="#B8973E" stroke-width="1.4">
+      <path d="M12 16V4m0 0L8 8m4-4l4 4"/><path d="M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/>
+    </svg>
+    <div class="dz-title">拖曳發票照片到這裡，或點擊選擇</div>
+    <div class="dz-sub">支援 JPG／PNG／WebP／HEIC 多張同時上傳　·　每張產生一張可編輯表格</div>
+    <div class="dz-actions">
+      <button class="btn btn-sm" id="btnBrowse">選擇照片</button>
+      <button class="btn btn-sm" id="btnManual">手動新增空白表</button>
+      <button class="btn btn-sm" id="btnLoad">載入工作檔 .json</button>
+    </div>
+    <div class="hint">辨識由伺服器處理（金鑰已安全保管，畫面不會接觸）；iPhone／LINE 的 HEIC 會自動轉檔，可直接上傳</div>
+    <input type="file" id="fileInput" accept="image/*,.heic,.heif" multiple hidden>
+    <input type="file" id="jsonInput" accept=".json,application/json" hidden>
+  </div>
+
+  <div id="invoiceList"></div>
+
+  <section class="settle">
+    <div class="sec-title"><span class="mark"></span>結算彙總</div>
+    <div class="panels">
+      <div>
+        <div id="summaryTable"></div>
+      </div>
+      <div>
+        <div style="font-size:11px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase;margin-bottom:8px">廠商樞紐分析</div>
+        <div id="pivotTable"></div>
+        <div style="margin-top:22px;text-align:right">
+          <div class="grand"><small>本次總計 (NT$)</small><span id="grandTotal" class="num">0</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="toolbar">
+      <button class="btn btn-brass" id="btnExportAll">匯出全部 (.xlsx)</button>
+      <button class="btn btn-solid" id="btnSave">儲存工作檔 (.json)</button>
+      <button class="btn btn-ghost" id="btnClear" style="margin-left:auto">清空全部</button>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+<div id="lightbox"><img id="lightboxImg" alt=""></div>
+
+<script>
+/* ============ 狀態 ============ */
+const state = { invoices: [], counter: 0, password: '', model: 'gemini-2.5-flash' };
+const VENDOR_COLORS = ['#B8973E','#5C7A4A','#A84B3A','#6B7B9E','#9A6FA8','#C08A3E','#4F8A8B','#8B6F47'];
+const vendorColorMap = {};
+function vendorColor(v){ if(!v) return 'var(--rose)'; if(!(v in vendorColorMap)){ vendorColorMap[v]=VENDOR_COLORS[Object.keys(vendorColorMap).length%VENDOR_COLORS.length]; } return vendorColorMap[v]; }
+
+/* ============ 工具 ============ */
+const $ = s => document.querySelector(s);
+const fmt = n => { const x=Number(n)||0; return x.toLocaleString('zh-Hant-TW',{maximumFractionDigits:2}); };
+const parseNum = v => { if(v===null||v===undefined||v==='') return 0; const n=Number(String(v).replace(/[^0-9.\-]/g,'')); return isNaN(n)?0:n; };
+function nowStamp(){ const d=new Date(); const p=x=>String(x).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; }
+function fileStamp(){ const d=new Date(); const p=x=>String(x).padStart(2,'0'); return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`; }
+$('#sessionDate').textContent = nowStamp();
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),2400); }
+
+/* ============ 影像處理（支援 HEIC） ============ */
+function loadViaCanvas(blob){
+  return new Promise((resolve,reject)=>{
+    const url=URL.createObjectURL(blob);
+    const img=new Image();
+    img.onload=()=>{
+      const max=1600; let {width:w,height:h}=img;
+      if(Math.max(w,h)>max){ const r=max/Math.max(w,h); w=Math.round(w*r); h=Math.round(h*r); }
+      const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
+      cv.getContext('2d').drawImage(img,0,0,w,h);
+      const dataUrl=cv.toDataURL('image/jpeg',0.85);
+      URL.revokeObjectURL(url);
+      resolve({ dataUrl, base64:dataUrl.split(',')[1], mediaType:'image/jpeg' });
+    };
+    img.onerror=()=>{ URL.revokeObjectURL(url); reject(new Error('decode-fail')); };
+    img.src=url;
+  });
+}
+function fileToBase64(blob){
+  return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(',')[1]); r.onerror=()=>rej(new Error('read-fail')); r.readAsDataURL(blob); });
+}
+async function sniffHeic(file){
+  try{
+    const buf=new Uint8Array(await file.slice(0,16).arrayBuffer());
+    let s=''; for(let i=0;i<buf.length;i++) s+=String.fromCharCode(buf[i]);
+    if(s.slice(4,8)!=='ftyp') return false;
+    return ['heic','heix','hevc','heim','heis','hevm','hevs','mif1','msf1','heif'].includes(s.slice(8,12).toLowerCase());
+  }catch(_){ return false; }
+}
+async function compressImage(file){
+  // 1) 先試瀏覽器原生解碼（JPG／PNG／WebP 走這條，最快）
+  try{ return await loadViaCanvas(file); }catch(_){}
+  // 2) 解不開：可能是 HEIC，用 heic2any 轉成 JPEG 再壓
+  if(window.heic2any){
+    try{
+      const out=await heic2any({ blob:file, toType:'image/jpeg', quality:0.85 });
+      const jpg=Array.isArray(out)?out[0]:out;
+      return await loadViaCanvas(jpg);
+    }catch(_){}
+  }
+  // 3) 最後手段：直接把原始位元送 Gemini（Gemini 支援 HEIC／HEIF）
+  const isHeic=await sniffHeic(file);
+  const base64=await fileToBase64(file);
+  return { dataUrl:'', base64, mediaType: isHeic?'image/heic':(file.type||'image/jpeg') };
+}
+
+/* ============ 視覺辨識 ============ */
+const SYS = '你是專業的發票與出貨明細資料擷取助手。你只會輸出一個合法的 JSON 物件，不含任何說明文字、前言或 markdown 標記。';
+const PROMPT = [
+  '請辨識這張發票或出貨明細照片，擷取資料並以 JSON 物件回傳，欄位如下：',
+  '{"vendor":廠商或店家名稱字串,"date":日期YYYY-MM-DD字串,"invoiceNo":發票號碼或單號字串,"items":[{"name":品名,"qty":數量數字,"unitPrice":單價數字,"subtotal":小計數字}],"total":總金額數字}',
+  '規則：',
+  '1. 只擷取商品明細列，忽略地址、電話、統一編號、備註、印章、廣告等無關資訊。',
+  '2. 數字不要含貨幣符號或千分位逗號。',
+  '3. 完全看不清楚的數字填 null，不要亂猜。',
+  '4. 所有文字使用繁體中文。',
+  '5. 只回傳 JSON 物件本身。'
+].join('\n');
+
+/* ============ 視覺辨識（呼叫後端 /api/recognize，帶密碼） ============ */
+async function callVision(base64, mediaType){
+  const res = await fetch('/api/recognize',{
+    method:'POST', headers:{'content-type':'application/json'},
+    body:JSON.stringify({ password:state.password, model:state.model, image:base64, mediaType })
+  });
+  let payload;
+  try{ payload = await res.json(); }
+  catch(_){ throw new Error('伺服器回應異常 '+res.status); }
+  if(res.status===401){ GATE.show(); const e=new Error('密碼錯誤或已失效，請重新輸入'); throw e; }
+  if(payload.error){ const e=new Error(payload.error); e.raw=payload.raw; throw e; }
+  if(!payload.data){ const e=new Error('辨識無資料'); e.raw=payload.raw; throw e; }
+  return payload.data;
+}
+
+/* ============ 新增發票 ============ */
+function makeInvoice(data, thumb){
+  state.counter++;
+  const items=(data.items||[]).map(it=>({
+    name:it.name||'', qty:it.qty===null?'':parseNum(it.qty),
+    unitPrice:it.unitPrice===null?'':parseNum(it.unitPrice),
+    subtotal:it.subtotal===null?'':parseNum(it.subtotal), manualSub:false
+  }));
+  // 若小計缺漏，用數量×單價補
+  items.forEach(it=>{ if(it.subtotal===''&&it.qty!==''&&it.unitPrice!=='') it.subtotal=round2(parseNum(it.qty)*parseNum(it.unitPrice)); });
+  const computed=items.reduce((s,it)=>s+parseNum(it.subtotal),0);
+  const inv={
+    id:state.counter, vendor:data.vendor||'', date:data.date||'',
+    invoiceNo:data.invoiceNo||'', items, thumb:thumb||'',
+    total:(data.total!==undefined&&data.total!==null)?parseNum(data.total):round2(computed),
+    manualTotal:(data.total!==undefined&&data.total!==null)
+  };
+  if(!inv.items.length) inv.items.push(blankItem());
+  return inv;
+}
+function blankItem(){ return {name:'',qty:'',unitPrice:'',subtotal:'',manualSub:false}; }
+function round2(n){ return Math.round((Number(n)||0)*100)/100; }
+
+/* ============ 渲染 ============ */
+function render(){
+  const list=$('#invoiceList'); list.innerHTML='';
+  state.invoices.forEach((inv,i)=> list.appendChild(renderCard(inv,i)));
+  renderSummary();
+}
+
+function renderCard(inv,i){
+  const card=document.createElement('div'); card.className='invoice'; card.dataset.inv=inv.id;
+  const rowsHtml=inv.items.map((it,r)=>`
+    <tr data-row="${r}">
+      <td><input data-field="name" value="${esc(it.name)}" placeholder="品名"></td>
+      <td><input class="r num" data-field="qty" value="${it.qty}" inputmode="decimal" placeholder="0"></td>
+      <td><input class="r num" data-field="unitPrice" value="${it.unitPrice}" inputmode="decimal" placeholder="0"></td>
+      <td><input class="r num" data-field="subtotal" value="${it.subtotal}" inputmode="decimal" placeholder="0"></td>
+      <td class="col-del"><button class="row-del" data-act="delRow" title="刪除此列">×</button></td>
+    </tr>`).join('');
+  card.innerHTML=`
+    <div class="inv-head">
+      <div class="inv-idx">${i+1}</div>
+      ${inv.thumb?`<img class="inv-thumb" src="${inv.thumb}" data-act="zoom" alt="發票縮圖">`:''}
+      <div class="inv-fields">
+        <div class="fld"><label>廠商名稱</label><input data-field="vendor" value="${esc(inv.vendor)}" placeholder="廠商"></div>
+        <div class="fld"><label>日期</label><input data-field="date" value="${esc(inv.date)}" placeholder="YYYY-MM-DD"></div>
+        <div class="fld"><label>單號 / 發票號碼</label><input data-field="invoiceNo" value="${esc(inv.invoiceNo)}" placeholder="選填"></div>
+      </div>
+    </div>
+    <div class="tbl-wrap">
+      <table class="items">
+        <thead><tr><th>品名</th><th class="r">數量</th><th class="r">單價</th><th class="r">小計</th><th></th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+    <div class="inv-foot">
+      <div class="foot-left">
+        <button class="btn btn-sm" data-act="addRow">＋ 新增列</button>
+        <button class="btn btn-sm" data-act="exportOne">匯出此張 .xlsx</button>
+        <button class="btn btn-ghost btn-sm" data-act="delInv">刪除整張</button>
+      </div>
+      <div class="total-box">
+        <button class="pill-sum" data-act="applyAuto" title="套用小計加總">Σ 自動 <span data-field="autoTotal" class="num">${fmt(autoTotal(inv))}</span></button>
+        <label>總額</label>
+        <input class="total-input num" data-field="total" value="${inv.total}" inputmode="decimal">
+      </div>
+    </div>`;
+  return card;
+}
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function autoTotal(inv){ return round2(inv.items.reduce((s,it)=>s+parseNum(it.subtotal),0)); }
+function getInv(id){ return state.invoices.find(v=>v.id==id); }
+
+/* ============ 結算面板 ============ */
+function renderSummary(){
+  const box=$('#summaryTable'), piv=$('#pivotTable');
+  if(!state.invoices.length){
+    box.innerHTML='<div class="empty-note">尚無資料。上傳發票照片後，這裡會即時彙總每一張。</div>';
+    piv.innerHTML='<div class="empty-note">—</div>'; $('#grandTotal').textContent='0'; return;
+  }
+  let grand=0;
+  const rows=state.invoices.map((inv,i)=>{ const t=parseNum(inv.total); grand+=t;
+    return `<tr><td class="num">${i+1}</td><td class="num">${esc(inv.date||'—')}</td>
+      <td><span class="vendor-tag" style="background:${vendorColor(inv.vendor)}"></span>${esc(inv.vendor||'未填')}</td>
+      <td class="num">${esc(inv.invoiceNo||'—')}</td><td class="r num">${inv.items.filter(it=>it.name||it.subtotal).length}</td>
+      <td class="r num">${fmt(t)}</td></tr>`;
+  }).join('');
+  box.innerHTML=`<table class="summary">
+    <thead><tr><th>#</th><th>日期</th><th>廠商</th><th>單號</th><th class="r">項目</th><th class="r">金額</th></tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr><td colspan="5">總計 ${state.invoices.length} 張</td><td class="r num">${fmt(grand)}</td></tr></tfoot>
+  </table>`;
+
+  const map={};
+  state.invoices.forEach(inv=>{ const k=inv.vendor||'未填'; if(!map[k])map[k]={count:0,amt:0}; map[k].count++; map[k].amt+=parseNum(inv.total); });
+  const pivRows=Object.entries(map).sort((a,b)=>b[1].amt-a[1].amt).map(([k,v])=>`
+    <tr><td><span class="vendor-tag" style="background:${vendorColor(k==='未填'?'':k)}"></span>${esc(k)}</td>
+    <td class="r num">${v.count}</td><td class="r num">${fmt(v.amt)}</td>
+    <td class="r num">${grand?Math.round(v.amt/grand*100):0}%</td></tr>`).join('');
+  piv.innerHTML=`<table class="summary">
+    <thead><tr><th>廠商</th><th class="r">張數</th><th class="r">金額</th><th class="r">佔比</th></tr></thead>
+    <tbody>${pivRows}</tbody></table>`;
+  $('#grandTotal').textContent=fmt(grand);
+}
+
+/* ============ 事件委派：即時編輯 ============ */
+$('#invoiceList').addEventListener('input', e=>{
+  const fld=e.target.dataset.field; if(!fld) return;
+  const card=e.target.closest('.invoice'); const inv=getInv(card.dataset.inv); if(!inv) return;
+  const tr=e.target.closest('tr');
+  if(tr){ // 明細列
+    const r=+tr.dataset.row; const it=inv.items[r]; const val=e.target.value;
+    if(fld==='name') it.name=val;
+    else if(fld==='qty'){ it.qty=val; if(!it.manualSub) recalcRow(inv,r,card); }
+    else if(fld==='unitPrice'){ it.unitPrice=val; if(!it.manualSub) recalcRow(inv,r,card); }
+    else if(fld==='subtotal'){ it.subtotal=val; it.manualSub=true; }
+    refreshTotals(inv,card);
+  } else { // 表頭 / 總額
+    if(fld==='vendor'){ inv.vendor=e.target.value; renderSummary(); }
+    else if(fld==='date'){ inv.date=e.target.value; renderSummary(); }
+    else if(fld==='invoiceNo'){ inv.invoiceNo=e.target.value; renderSummary(); }
+    else if(fld==='total'){ inv.total=e.target.value; inv.manualTotal=true; renderSummary(); }
+  }
+});
+function recalcRow(inv,r,card){
+  const it=inv.items[r]; if(it.qty!==''&&it.unitPrice!==''){ it.subtotal=round2(parseNum(it.qty)*parseNum(it.unitPrice)); }
+  else it.subtotal='';
+  const cell=card.querySelector(`tr[data-row="${r}"] input[data-field="subtotal"]`); if(cell) cell.value=it.subtotal;
+}
+function refreshTotals(inv,card){
+  const auto=autoTotal(inv);
+  const a=card.querySelector('[data-field="autoTotal"]'); if(a) a.textContent=fmt(auto);
+  if(!inv.manualTotal){ inv.total=auto; const ti=card.querySelector('input[data-field="total"]'); if(ti) ti.value=auto; }
+  renderSummary();
+}
+
+/* 按鈕委派 */
+$('#invoiceList').addEventListener('click', e=>{
+  const act=e.target.dataset.act; if(!act) return;
+  const card=e.target.closest('.invoice'); const inv=getInv(card.dataset.inv); if(!inv) return;
+  if(act==='zoom'){ openLightbox(inv.thumb); return; }
+  if(act==='delRow'){ const r=+e.target.closest('tr').dataset.row; inv.items.splice(r,1); if(!inv.items.length) inv.items.push(blankItem()); inv.manualTotal=false; render(); return; }
+  if(act==='addRow'){ inv.items.push(blankItem()); render(); return; }
+  if(act==='applyAuto'){ inv.manualTotal=false; inv.total=autoTotal(inv); render(); return; }
+  if(act==='delInv'){ if(confirm('刪除整張發票？')){ state.invoices=state.invoices.filter(v=>v.id!=inv.id); render(); } return; }
+  if(act==='exportOne'){ exportInvoice(inv); return; }
+});
+
+/* ============ 上傳處理 ============ */
+async function handleFiles(files){
+  const arr=[...files];
+  const isImg=f=> f.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|heif|gif|bmp|tiff?)$/i.test(f.name);
+  const isJson=f=> f.type==='application/json' || f.name.toLowerCase().endsWith('.json');
+  const hasImage=arr.some(f=>isImg(f) && !isJson(f));
+  if(hasImage && !state.password){ GATE.show(); return; }
+  for(const f of arr){
+    if(isJson(f)){ await loadJsonFile(f); continue; }
+    if(!isImg(f)){ toast('略過非影像檔：'+f.name); continue; }
+    const pend=addPending(f.name);
+    try{
+      const {dataUrl,base64,mediaType}=await compressImage(f);
+      pend.querySelector('img')?.setAttribute('src',dataUrl);
+      const data=await callVision(base64,mediaType);
+      const inv=makeInvoice(data,dataUrl);
+      state.invoices.push(inv); pend.remove(); render();
+      toast('已辨識：'+(inv.vendor||f.name));
+    }catch(err){
+      showPendingError(pend, f.name, err);
+    }
+  }
+}
+function addPending(name){
+  const d=document.createElement('div'); d.className='pending';
+  d.innerHTML=`<div class="spinner"></div><img style="display:none"><div><div>辨識中：${esc(name)}</div><div class="hint">正在讀取明細並建立表格…</div></div>`;
+  $('#invoiceList').appendChild(d); return d;
+}
+function showPendingError(pend,name,err){
+  pend.classList.add('error'); pend.querySelector('.spinner')?.remove();
+  pend.innerHTML=`<div style="flex:1">
+    <div>⚠ 無法辨識：${esc(name)}　${esc(err.message||'')}</div>
+    ${err.raw?`<div class="raw">${esc(err.raw).slice(0,400)}</div>`:''}
+    <div style="margin-top:8px;display:flex;gap:8px">
+      <button class="btn btn-sm" data-r="manual">改用空白表手動輸入</button>
+      <button class="btn btn-ghost btn-sm" data-r="dismiss">移除</button>
+    </div></div>`;
+  pend.querySelector('[data-r="manual"]').onclick=()=>{ const inv=makeInvoice({items:[]},''); inv.vendor=''; state.invoices.push(inv); pend.remove(); render(); };
+  pend.querySelector('[data-r="dismiss"]').onclick=()=>pend.remove();
+}
+
+/* ============ 工作檔 存 / 讀 ============ */
+function saveSession(){
+  if(!state.invoices.length){ toast('沒有資料可儲存'); return; }
+  const payload={ savedAt:nowStamp(), label:$('#sessionLabel').value||'', invoices:state.invoices, version:1 };
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+  const label=$('#sessionLabel').value? '_'+$('#sessionLabel').value.replace(/[\\/:*?"<>|]/g,'') : '';
+  download(blob, `發票結算工作檔_${fileStamp()}${label}.json`);
+  toast('已儲存工作檔');
+}
+async function loadJsonFile(file){
+  try{
+    const txt=await file.text(); const obj=JSON.parse(txt);
+    const arr=Array.isArray(obj)?obj:obj.invoices;
+    if(!Array.isArray(arr)) throw new Error('檔案格式不符');
+    if(state.invoices.length && !confirm('載入工作檔會取代目前畫面上的資料，要繼續嗎？')) return;
+    state.invoices = arr.map(v=>{ state.counter++; return {
+      id:state.counter, vendor:v.vendor||'', date:v.date||'', invoiceNo:v.invoiceNo||'',
+      thumb:v.thumb||'', total:v.total??0, manualTotal:v.manualTotal??true,
+      items:(v.items&&v.items.length?v.items:[blankItem()]).map(it=>({name:it.name||'',qty:it.qty??'',unitPrice:it.unitPrice??'',subtotal:it.subtotal??'',manualSub:it.manualSub??false}))
+    };});
+    if(obj.label) $('#sessionLabel').value=obj.label;
+    if(obj.savedAt){ $('#sessionDate').textContent=obj.savedAt; }
+    render(); toast('已載入工作檔（'+(obj.savedAt||'')+'）');
+  }catch(err){ toast('載入失敗：'+err.message); }
+}
+
+/* ============ 匯出 xlsx ============ */
+function itemSheet(inv){
+  const aoa=[['廠商',inv.vendor||''],['日期',inv.date||''],['單號',inv.invoiceNo||''],[],
+    ['品名','數量','單價','小計']];
+  inv.items.filter(it=>it.name||it.subtotal).forEach(it=>aoa.push([it.name||'',num(it.qty),num(it.unitPrice),num(it.subtotal)]));
+  aoa.push([]); aoa.push(['','','總額',num(inv.total)]);
+  const ws=XLSX.utils.aoa_to_sheet(aoa); ws['!cols']=[{wch:24},{wch:8},{wch:10},{wch:12}]; return ws;
+}
+function num(v){ const n=parseNum(v); return v===''||v==null?'':n; }
+function exportInvoice(inv){
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, itemSheet(inv), sheetName((inv.vendor||'發票')));
+  XLSX.writeFile(wb, `${inv.date||fileStamp()}_${(inv.vendor||'發票').replace(/[\\/:*?"<>|]/g,'')}.xlsx`);
+}
+function exportAll(){
+  if(!state.invoices.length){ toast('沒有資料可匯出'); return; }
+  const wb=XLSX.utils.book_new();
+  // 彙總
+  let grand=0;
+  const sum=[['#','日期','廠商','單號','項目數','金額']];
+  state.invoices.forEach((inv,i)=>{ const t=parseNum(inv.total); grand+=t; sum.push([i+1,inv.date||'',inv.vendor||'',inv.invoiceNo||'',inv.items.filter(it=>it.name||it.subtotal).length,t]); });
+  sum.push([]); sum.push(['','','','','總計',grand]);
+  const ws1=XLSX.utils.aoa_to_sheet(sum); ws1['!cols']=[{wch:5},{wch:14},{wch:18},{wch:16},{wch:8},{wch:12}];
+  XLSX.utils.book_append_sheet(wb, ws1, '彙總');
+  // 樞紐
+  const map={}; state.invoices.forEach(inv=>{const k=inv.vendor||'未填'; if(!map[k])map[k]={c:0,a:0}; map[k].c++; map[k].a+=parseNum(inv.total);});
+  const piv=[['廠商','張數','金額','佔比']];
+  Object.entries(map).sort((a,b)=>b[1].a-a[1].a).forEach(([k,v])=>piv.push([k,v.c,v.a,(grand?(v.a/grand):0)]));
+  const ws2=XLSX.utils.aoa_to_sheet(piv); ws2['!cols']=[{wch:18},{wch:8},{wch:12},{wch:8}];
+  // 佔比格式化為百分比
+  for(let r=1;r<piv.length;r++){ const c=XLSX.utils.encode_cell({r,c:3}); if(ws2[c]){ws2[c].z='0%';} }
+  XLSX.utils.book_append_sheet(wb, ws2, '樞紐-廠商');
+  // 每張一個工作表
+  const used={};
+  state.invoices.forEach((inv,i)=>{ let nm=sheetName(`${i+1}_${inv.vendor||'發票'}`); while(used[nm]){nm=sheetName(nm+'_'+i);} used[nm]=1; XLSX.utils.book_append_sheet(wb, itemSheet(inv), nm); });
+  const label=$('#sessionLabel').value? '_'+$('#sessionLabel').value.replace(/[\\/:*?"<>|]/g,'') : '';
+  XLSX.writeFile(wb, `發票結算${label}_${fileStamp()}.xlsx`);
+  toast('已匯出全部表格');
+}
+function sheetName(s){ return String(s).replace(/[\\/:*?\[\]]/g,'').slice(0,28)||'表'; }
+
+/* ============ 雜項 ============ */
+function download(blob,name){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); }
+function openLightbox(src){ if(!src)return; $('#lightboxImg').src=src; $('#lightbox').style.display='grid'; }
+$('#lightbox').onclick=()=>{ $('#lightbox').style.display='none'; };
+
+/* ============ 綁定 ============ */
+const dz=$('#dropzone');
+['dragenter','dragover'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('over');}));
+['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('over');}));
+dz.addEventListener('drop',e=>handleFiles(e.dataTransfer.files));
+document.addEventListener('dragover',e=>e.preventDefault());
+document.addEventListener('drop',e=>{ if(!dz.contains(e.target)){ e.preventDefault(); handleFiles(e.dataTransfer.files); }});
+dz.addEventListener('click',e=>{ if(e.target.closest('button, input, select, label, #keyrow'))return; $('#fileInput').click(); });
+$('#btnBrowse').onclick=()=>$('#fileInput').click();
+$('#btnLoad').onclick=()=>$('#jsonInput').click();
+$('#fileInput').onchange=e=>{ handleFiles(e.target.files); e.target.value=''; };
+$('#jsonInput').onchange=e=>{ handleFiles(e.target.files); e.target.value=''; };
+$('#btnManual').onclick=()=>{ const inv=makeInvoice({items:[]},''); state.invoices.push(inv); render(); };
+$('#btnExportAll').onclick=exportAll;
+$('#btnSave').onclick=saveSession;
+$('#btnClear').onclick=()=>{ if(state.invoices.length&&confirm('清空全部資料？建議先儲存工作檔。')){ state.invoices=[]; render(); } };
+
+/* ============ 密碼登入 ============ */
+const GATE = { el:$('#gate'), show(){ this.el.style.display='grid'; setTimeout(()=>$('#gatePw').focus(),50); }, hide(){ this.el.style.display='none'; } };
+async function verifyPassword(pw){
+  try{
+    const r=await fetch('/api/recognize',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ping:true,password:pw})});
+    return r.ok;
+  }catch(_){ return false; }
+}
+async function submitGate(){
+  const pw=$('#gatePw').value;
+  $('#gateErr').style.color='var(--muted)'; $('#gateErr').textContent='驗證中…';
+  if(await verifyPassword(pw)){
+    state.password=pw; try{ localStorage.setItem('inv_pw',pw); }catch(_){}
+    $('#gateErr').textContent=''; GATE.hide();
+  }else{
+    $('#gateErr').style.color='var(--err)'; $('#gateErr').textContent='密碼錯誤，請再試一次';
+    $('#gatePw').select();
+  }
+}
+$('#gateBtn').onclick=submitGate;
+$('#gatePw').addEventListener('keydown',e=>{ if(e.key==='Enter') submitGate(); });
+(async function initGate(){
+  let pw=''; try{ pw=localStorage.getItem('inv_pw')||''; }catch(_){}
+  if(pw && await verifyPassword(pw)){ state.password=pw; GATE.hide(); }
+  else { GATE.show(); }
+})();
+
+render();
+</script>
+</body>
+</html>
