@@ -1,6 +1,7 @@
 // Cloudflare Pages Function — POST /api/recognize
-// 後端呼叫 Gemini 視覺辨識；金鑰存 GEMINI_API_KEY secret，前端不接觸。
-// 另以 APP_PASSWORD secret 做共用密碼，輸入正確才能使用。
+// 雙引擎：預設 Gemini；若設定 AI_BASE_URL + AI_API_KEY 則改走 OpenAI 相容端點
+// （可接 Qwen-VL：OpenRouter / DashScope / 自架 vLLM·Ollama 經 Cloudflare Tunnel）。
+// 密碼以 APP_PASSWORD 保護；所有金鑰只在伺服器端。
 
 const SYS = '你是專業的發票與出貨明細資料擷取助手。你只會輸出一個合法的 JSON 物件，不含任何說明文字、前言或 markdown 標記。';
 
@@ -15,96 +16,108 @@ const PROMPT = [
   '5. 只回傳 JSON 物件本身。'
 ].join('\n');
 
-const ALLOWED_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite'];
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite'];
+const DEFAULT_GEMINI = 'gemini-2.5-flash';
 
 function json(obj, status = 200) {
-  return new Response(JSON.stringify(obj), {
-    status,
-    headers: { 'content-type': 'application/json; charset=utf-8' }
+  return new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
+}
+function parseRetry(detail) {
+  const m = detail && String(detail).match(/retry in ([\d.]+)/i);
+  return m ? Math.ceil(parseFloat(m[1])) : 0;
+}
+
+// ---- 引擎一：OpenAI 相容（Qwen-VL 等）----
+async function callOpenAICompat(env, body) {
+  const base = String(env.AI_BASE_URL).replace(/\/+$/, '');
+  const r = await fetch(base + '/chat/completions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + env.AI_API_KEY },
+    body: JSON.stringify({
+      model: env.AI_MODEL || 'qwen-vl-plus',
+      temperature: 0,
+      max_tokens: 4096,
+      messages: [
+        { role: 'system', content: SYS },
+        { role: 'user', content: [
+          { type: 'text', text: PROMPT },
+          { type: 'image_url', image_url: { url: 'data:' + (body.mediaType || 'image/jpeg') + ';base64,' + body.image } }
+        ] }
+      ]
+    })
   });
+  if (!r.ok) {
+    let detail = '';
+    try { const j = await r.json(); detail = j.error?.message || j.message || ''; }
+    catch (_) { try { detail = await r.text(); } catch (__) {} }
+    const e = new Error(detail || ('HTTP ' + r.status)); e.status = r.status;
+    if (r.status === 429) e.retryAfter = parseInt(r.headers.get('retry-after') || '0', 10) || parseRetry(detail) || 30;
+    throw e;
+  }
+  const d = await r.json();
+  return d.choices?.[0]?.message?.content || '';
+}
+
+// ---- 引擎二：Gemini ----
+async function callGemini(env, body) {
+  const apiKey = env.GEMINI_API_KEY;
+  if (!apiKey) { const e = new Error('伺服器尚未設定 GEMINI_API_KEY（請檢查 Secret 名稱是否正確、無多餘符號）'); e.status = 500; throw e; }
+  const model = GEMINI_MODELS.includes(body.model) ? body.model : DEFAULT_GEMINI;
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(apiKey);
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: SYS }] },
+      contents: [{ parts: [
+        { inline_data: { mime_type: body.mediaType || 'image/jpeg', data: body.image } },
+        { text: PROMPT }
+      ] }],
+      generationConfig: { temperature: 0, responseMimeType: 'application/json', maxOutputTokens: 4096 }
+    })
+  });
+  if (!r.ok) {
+    let detail = ''; let payload = null;
+    try { payload = await r.json(); detail = payload.error?.message || ''; } catch (_) {}
+    const e = new Error(detail || ('HTTP ' + r.status)); e.status = r.status;
+    if (r.status === 429) {
+      let ra = 0;
+      try { const ri = (payload?.error?.details || []).find(d => String(d['@type'] || '').includes('RetryInfo')); const m = ri?.retryDelay && String(ri.retryDelay).match(/([\d.]+)/); if (m) ra = Math.ceil(parseFloat(m[1])); } catch (_) {}
+      e.retryAfter = ra || parseRetry(detail) || 30;
+    }
+    throw e;
+  }
+  const data = await r.json();
+  const cand = (data.candidates || [])[0];
+  if (!cand) { const reason = data.promptFeedback?.blockReason; const e = new Error('辨識無回應' + (reason ? '（' + reason + '）' : '')); e.status = 502; throw e; }
+  return (cand.content?.parts || []).map(p => p.text || '').join('\n');
 }
 
 export async function onRequestPost(context) {
   const { request, env } = context;
 
   let body;
-  try { body = await request.json(); }
-  catch (_) { return json({ error: '請求格式錯誤' }, 400); }
+  try { body = await request.json(); } catch (_) { return json({ error: '請求格式錯誤' }, 400); }
 
-  // 共用密碼檢查
-  if (env.APP_PASSWORD) {
-    if (!body.password || body.password !== env.APP_PASSWORD) {
-      return json({ error: '密碼錯誤' }, 401);
-    }
-  }
-  // 登入畫面只是來驗證密碼
+  if (!env.APP_PASSWORD) return json({ error: '伺服器尚未設定 APP_PASSWORD（請檢查 Secret 名稱是否正確、無多餘符號）' }, 500);
+  if (!body.password || body.password !== env.APP_PASSWORD) return json({ error: '密碼錯誤' }, 401);
   if (body.ping) return json({ ok: true });
-
-  const apiKey = env.GEMINI_API_KEY;
-  if (!apiKey) return json({ error: '伺服器尚未設定 GEMINI_API_KEY' }, 500);
   if (!body.image) return json({ error: '缺少影像資料' }, 400);
 
-  const model = ALLOWED_MODELS.includes(body.model) ? body.model : DEFAULT_MODEL;
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(apiKey);
-
-  let r;
+  const useQwen = env.AI_BASE_URL && env.AI_API_KEY;
+  let text;
   try {
-    r = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYS }] },
-        contents: [{ parts: [
-          { inline_data: { mime_type: body.mediaType || 'image/jpeg', data: body.image } },
-          { text: PROMPT }
-        ] }],
-        generationConfig: { temperature: 0, responseMimeType: 'application/json', maxOutputTokens: 4096 }
-      })
-    });
+    text = useQwen ? await callOpenAICompat(env, body) : await callGemini(env, body);
   } catch (err) {
-    // 連線失敗多屬暫時性，標記可重試讓前端自動倒數重試
-    return json({ error: '無法連線辨識服務：' + (err.message || ''), retryable: true, retryAfter: null }, 502);
+    if (err.status === 429) return json({ error: '已達額度上限', rateLimited: true, retryAfter: err.retryAfter || 30 }, 429);
+    return json({ error: '辨識服務回應 ' + (err.status || '') + '：' + (err.message || '') }, err.status === 500 ? 500 : 502);
   }
 
-  if (!r.ok) {
-    let detail = '', retryAfter = null;
-    try {
-      const j = await r.json();
-      detail = j.error?.message || '';
-      // 從上游 error.details 找 RetryInfo.retryDelay（如 "30s"、"1.5s"）
-      const info = (j.error?.details || []).find(d => String(d['@type'] || '').includes('RetryInfo'));
-      if (info && info.retryDelay) {
-        const sec = parseFloat(String(info.retryDelay));
-        if (!isNaN(sec)) retryAfter = Math.ceil(sec);
-      }
-    } catch (_) {}
-    // 429 速率限制、500 內部錯誤、503 超載視為暫時性，可自動重試
-    const retryable = [429, 500, 503].includes(r.status);
-    return json({
-      error: '辨識服務回應 ' + r.status + (detail ? '：' + detail : ''),
-      retryable,
-      retryAfter,
-      upstreamStatus: r.status
-    }, 502);
-  }
-
-  const data = await r.json();
-  const cand = (data.candidates || [])[0];
-  if (!cand) {
-    const reason = data.promptFeedback?.blockReason;
-    return json({ error: '辨識無回應' + (reason ? '（' + reason + '）' : '') });
-  }
-  const text = (cand.content?.parts || []).map(p => p.text || '').join('\n');
-  let clean = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+  let clean = String(text).replace(/```json/gi, '').replace(/```/g, '').trim();
   const s = clean.indexOf('{'), e = clean.lastIndexOf('}');
-  if (s < 0 || e < 0) return json({ error: '回傳格式無法解析', raw: text.slice(0, 500) });
-
-  try {
-    return json({ data: JSON.parse(clean.slice(s, e + 1)) });
-  } catch (_) {
-    return json({ error: 'JSON 解析失敗', raw: text.slice(0, 500) });
-  }
+  if (s < 0 || e < 0) return json({ error: '回傳格式無法解析', raw: String(text).slice(0, 500) });
+  try { return json({ data: JSON.parse(clean.slice(s, e + 1)) }); }
+  catch (_) { return json({ error: 'JSON 解析失敗', raw: String(text).slice(0, 500) }); }
 }
 
 export async function onRequest(context) {
