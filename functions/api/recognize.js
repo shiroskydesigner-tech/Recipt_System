@@ -63,13 +63,30 @@ export async function onRequestPost(context) {
       })
     });
   } catch (err) {
-    return json({ error: '無法連線辨識服務：' + (err.message || '') }, 502);
+    // 連線失敗多屬暫時性，標記可重試讓前端自動倒數重試
+    return json({ error: '無法連線辨識服務：' + (err.message || ''), retryable: true, retryAfter: null }, 502);
   }
 
   if (!r.ok) {
-    let detail = '';
-    try { const j = await r.json(); detail = j.error?.message || ''; } catch (_) {}
-    return json({ error: '辨識服務回應 ' + r.status + (detail ? '：' + detail : '') }, 502);
+    let detail = '', retryAfter = null;
+    try {
+      const j = await r.json();
+      detail = j.error?.message || '';
+      // 從上游 error.details 找 RetryInfo.retryDelay（如 "30s"、"1.5s"）
+      const info = (j.error?.details || []).find(d => String(d['@type'] || '').includes('RetryInfo'));
+      if (info && info.retryDelay) {
+        const sec = parseFloat(String(info.retryDelay));
+        if (!isNaN(sec)) retryAfter = Math.ceil(sec);
+      }
+    } catch (_) {}
+    // 429 速率限制、500 內部錯誤、503 超載視為暫時性，可自動重試
+    const retryable = [429, 500, 503].includes(r.status);
+    return json({
+      error: '辨識服務回應 ' + r.status + (detail ? '：' + detail : ''),
+      retryable,
+      retryAfter,
+      upstreamStatus: r.status
+    }, 502);
   }
 
   const data = await r.json();

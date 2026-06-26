@@ -131,6 +131,8 @@
   .spinner{width:20px; height:20px; border:2.5px solid var(--line); border-top-color:var(--brass); border-radius:50%; animation:spin .8s linear infinite; flex:none}
   @keyframes spin{to{transform:rotate(360deg)}}
   .pending.error{border-color:var(--err); color:var(--err)}
+  .pending.waiting{border-color:var(--brass-d); color:var(--ink2)}
+  .pending.waiting .cd-num{font-family:'Noto Serif TC',serif; font-weight:700; font-size:16px; color:var(--brass-d)}
   .pending .raw{font-size:11px; color:var(--muted); max-height:60px; overflow:auto; font-family:monospace; margin-top:4px}
   /* ---- 結算 ---- */
   .settle{margin-top:40px}
@@ -305,7 +307,9 @@ async function compressImage(file){
 }
 
 /* ============ 視覺辨識 ============ */
-const SYS = '你是專業的發票與出貨明細資料擷取助手。你只會輸出一個合法的 JSON 物件，不含任何說明文字、前言或 markdown 標記。';
+/* 自動重試設定（依使用者指示：實際等待 = 上游建議秒數 + buffer 秒） */
+const RETRY = { buffer:2, fallbackSec:15, maxWaitSec:120, maxAttempts:8 };
+const SYS ='你是專業的發票與出貨明細資料擷取助手。你只會輸出一個合法的 JSON 物件，不含任何說明文字、前言或 markdown 標記。';
 const PROMPT = [
   '請辨識這張發票或出貨明細照片，擷取資料並以 JSON 物件回傳，欄位如下：',
   '{"vendor":廠商或店家名稱字串,"date":日期YYYY-MM-DD字串,"invoiceNo":發票號碼或單號字串,"items":[{"name":品名,"qty":數量數字,"unitPrice":單價數字,"subtotal":小計數字}],"total":總金額數字}',
@@ -327,7 +331,7 @@ async function callVision(base64, mediaType){
   try{ payload = await res.json(); }
   catch(_){ throw new Error('伺服器回應異常 '+res.status); }
   if(res.status===401){ GATE.show(); const e=new Error('密碼錯誤或已失效，請重新輸入'); throw e; }
-  if(payload.error){ const e=new Error(payload.error); e.raw=payload.raw; throw e; }
+  if(payload.error){ const e=new Error(payload.error); e.raw=payload.raw; e.retryable=!!payload.retryable; e.retryAfter=payload.retryAfter; throw e; }
   if(!payload.data){ const e=new Error('辨識無資料'); e.raw=payload.raw; throw e; }
   return payload.data;
 }
@@ -495,7 +499,7 @@ async function handleFiles(files){
     try{
       const {dataUrl,base64,mediaType}=await compressImage(f);
       pend.querySelector('img')?.setAttribute('src',dataUrl);
-      const data=await callVision(base64,mediaType);
+      const data=await recognizeWithRetry(pend,base64,mediaType,f.name);
       const inv=makeInvoice(data,dataUrl);
       state.invoices.push(inv); pend.remove(); render();
       toast('已辨識：'+(inv.vendor||f.name));
@@ -506,8 +510,50 @@ async function handleFiles(files){
 }
 function addPending(name){
   const d=document.createElement('div'); d.className='pending';
-  d.innerHTML=`<div class="spinner"></div><img style="display:none"><div><div>辨識中：${esc(name)}</div><div class="hint">正在讀取明細並建立表格…</div></div>`;
+  setPendingBusy(d,name);
   $('#invoiceList').appendChild(d); return d;
+}
+function setPendingBusy(pend,name){
+  pend.classList.remove('error','waiting');
+  pend.innerHTML=`<div class="spinner"></div><img style="display:none"><div><div>辨識中：${esc(name)}</div><div class="hint">正在讀取明細並建立表格…</div></div>`;
+}
+/* 超載時的倒數等待：resolve(false)=繼續重試、resolve(true)=使用者取消 */
+function countdownWait(pend,name,seconds,attempt){
+  return new Promise(resolve=>{
+    let left=seconds, timer=null;
+    const done=val=>{ if(timer){clearInterval(timer);timer=null;} resolve(val); };
+    pend.classList.remove('error'); pend.classList.add('waiting');
+    pend.innerHTML=`<div class="spinner"></div><div style="flex:1">
+      <div>⏳ 辨識服務忙碌中（系統超載）：${esc(name)}</div>
+      <div class="hint"><span class="cd-num num">${left}</span> 秒後自動重試（第 ${attempt} 次）…</div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn btn-sm" data-r="now">立即重試</button>
+        <button class="btn btn-ghost btn-sm" data-r="cancel">取消</button>
+      </div></div>`;
+    pend.querySelector('[data-r="now"]').onclick=()=>done(false);
+    pend.querySelector('[data-r="cancel"]').onclick=()=>done(true);
+    const numEl=pend.querySelector('.cd-num');
+    timer=setInterval(()=>{
+      left--;
+      if(left<=0){ done(false); return; }
+      if(numEl) numEl.textContent=left;
+    },1000);
+  });
+}
+async function recognizeWithRetry(pend,base64,mediaType,name){
+  let attempt=0;
+  while(true){
+    try{ return await callVision(base64,mediaType); }
+    catch(err){
+      if(!err.retryable || attempt>=RETRY.maxAttempts) throw err;
+      attempt++;
+      const base=(err.retryAfter!=null?err.retryAfter:RETRY.fallbackSec);
+      const wait=Math.min(base+RETRY.buffer,RETRY.maxWaitSec);
+      const cancelled=await countdownWait(pend,name,wait,attempt);
+      if(cancelled) throw err;
+      setPendingBusy(pend,name);
+    }
+  }
 }
 function showPendingError(pend,name,err){
   pend.classList.add('error'); pend.querySelector('.spinner')?.remove();
