@@ -283,6 +283,7 @@
       </div>
     </div>
     <div class="toolbar">
+      <button class="btn btn-brass" id="btnNew">＋ 新建（選照片辨識）</button>
       <button class="btn btn-solid" id="btnAnalyze">📊 彈性分析</button>
       <button class="btn btn-brass" id="btnExportAll">匯出全部 (.xlsx)</button>
       <button class="btn btn-solid" id="btnSave">儲存工作檔 (.json)</button>
@@ -487,6 +488,7 @@ function renderCard(inv,i){
     <div class="inv-foot">
       <div class="foot-left">
         <button class="btn btn-sm" data-act="addRow">＋ 新增列</button>
+        ${inv.thumb?`<button class="btn btn-sm" data-act="reRecognize">↻ 重新辨識</button>`:''}
         <button class="btn btn-sm" data-act="exportOne">匯出此張 .xlsx</button>
         <button class="btn btn-ghost btn-sm" data-act="delInv">刪除整張</button>
       </div>
@@ -603,7 +605,36 @@ $('#invoiceList').addEventListener('click', e=>{
   if(act==='applyAuto'){ inv.manualTotal=false; inv.total=autoTotal(inv); render(); return; }
   if(act==='delInv'){ if(confirm('刪除整張發票？')){ state.invoices=state.invoices.filter(v=>v.id!=inv.id); render(); } return; }
   if(act==='exportOne'){ exportInvoice(inv); return; }
+  if(act==='reRecognize'){ reRecognize(inv, card); return; }
 });
+/* 用該張原本的照片重新辨識，覆蓋這張資料（保留母單位與縮圖） */
+async function reRecognize(inv, card){
+  if(!inv.thumb){ toast('此張沒有照片可重新辨識'); return; }
+  if(!state.password){ GATE.show(); return; }
+  const btn=card.querySelector('[data-act="reRecognize"]');
+  const base64=inv.thumb.split(',')[1];
+  const mm=/^data:([^;]+);/.exec(inv.thumb); const mediaType=mm?mm[1]:'image/jpeg';
+  if(btn){ btn.disabled=true; btn.textContent='辨識中…'; }
+  try{
+    let result=null, attempt=0;
+    while(true){
+      try{ result=await callVision(base64, mediaType); break; }
+      catch(err){
+        if(err.rateLimited && attempt<6){ attempt++; const w=Math.min(err.retryAfter||30,60);
+          if(btn) btn.textContent=`忙碌，${w}s 後重試`; await sleep(w*1000); continue; }
+        throw err;
+      }
+    }
+    const fresh=makeInvoice(result.data, inv.thumb);
+    inv.vendor=fresh.vendor; inv.date=fresh.date; inv.invoiceNo=fresh.invoiceNo;
+    inv.items=fresh.items; inv.total=fresh.total; inv.manualTotal=fresh.manualTotal; inv.engine=result.engine;
+    render();
+    toast((result.engine==='local'?'⚙ 本地端重新辨識完成：':'已重新辨識：')+(inv.vendor||''));
+  }catch(err){
+    toast('重新辨識失敗：'+(err.message||''));
+    if(btn){ btn.disabled=false; btn.textContent='↻ 重新辨識'; }
+  }
+}
 
 /* ============ 上傳處理 ============ */
 async function handleFiles(files){
@@ -756,6 +787,7 @@ $('#btnLoad').onclick=()=>$('#jsonInput').click();
 $('#fileInput').onchange=e=>{ handleFiles(e.target.files); e.target.value=''; };
 $('#jsonInput').onchange=e=>{ handleFiles(e.target.files); e.target.value=''; };
 $('#btnManual').onclick=()=>{ const inv=makeInvoice({items:[]},''); state.invoices.push(inv); render(); };
+$('#btnNew').onclick=()=>$('#fileInput').click();
 $('#btnExportAll').onclick=exportAll;
 $('#btnSave').onclick=saveSession;
 $('#btnClear').onclick=()=>{ if(state.invoices.length&&confirm('清空全部資料？建議先儲存工作檔。')){ state.invoices=[]; render(); } };
@@ -832,7 +864,7 @@ function analysisRows(){
       if(fv && vendor!==fv) return;
       if(fu && unit!==fu) return;
       const sub=parseNum(it.subtotal), g=(dim==='unit'?unit:vendor);
-      const key=byItem? g+' '+(it.name||'(未命名)') : g;
+      const key=byItem? g+'\u241f'+(it.name||'(未命名)') : g;
       if(!map[key]) map[key]={ g, item: byItem?(it.name||'(未命名)'):'', amt:0, items:0, invs:new Set() };
       map[key].amt+=sub; map[key].items++; map[key].invs.add(inv.id); total+=sub;
     }); });
